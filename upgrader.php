@@ -71,6 +71,11 @@ function getLatestVersion()
     return $latest_version;
 }
 
+function checkGitFolderExists()
+{
+    return is_dir('.git');
+}
+
 function downloadFile($url, $path)
 {
     $content = file_get_contents($url);
@@ -100,6 +105,8 @@ function checkDirectoryWritable($src)
 
 function upgradeVersion($latest_version)
 {
+    set_time_limit(180); // 타임아웃 시간을 180초(3분)으로 설정
+
     $result = [];
 
     // Check if directories are writable
@@ -183,8 +190,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             text-align: center;
         }
 
-        .version {
-            margin-left: 15px;
+        li {
+            font-family: Arial, sans-serif;
         }
 
         button {
@@ -216,12 +223,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <body>
     <div class="container">
         <h1 class="title">Rhymix Upgrader</h1>
-        <p class="version">Current version:
-            <?= getCurrentVersion(); ?>
-        </p>
-        <p class="version">Latest version:
-            <?= getLatestVersion(); ?>
-        </p>
+        <ul>
+            <li>Current version: <?= getCurrentVersion(); ?></li>
+            <li>Latest version: <?= getLatestVersion(); ?></li>
+            <li>.git Found: <?= checkGitFolderExists() ? 'true' : 'false' ?></li>
+        </ul>
         <br><br>
         <button type="button" onclick="checkVersionsAndUpgrade()">Upgrade</button>
         <div class="progress">
@@ -231,15 +237,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </div>
     <script>
         function checkVersionsAndUpgrade() {
-            const currentVersion = '<?= getCurrentVersion(); ?>';
-            const latestVersion = '<?= getLatestVersion(); ?>';
+        const currentVersion = '<?= getCurrentVersion(); ?>';
+        const latestVersion = '<?= getLatestVersion(); ?>';
+        const gitFolderExists = <?= checkGitFolderExists() ? 'true' : 'false' ?>;
 
-            if (currentVersion === latestVersion) {
-                const shouldUpgrade = confirm('현재 최신버전을 사용중인 것 같습니다. 그래도 최신 버전으로 덮어씌우시겠습니까?');
-                if (!shouldUpgrade) {
-                    return;
-                }
+        if (currentVersion === latestVersion) {
+            const shouldUpgrade = confirm('현재 최신버전을 사용중인 것 같습니다. 그래도 최신 버전으로 덮어씌우시겠습니까?');
+            if (!shouldUpgrade) {
+                return;
             }
+        }
+
+        if (gitFolderExists) {
+            const shouldUpgradeWithGit = confirm('.git 폴더를 발견했습니다. git 명령어로 업데이트 하는 것을 권장합니다. 그래도 업데이트 하시겠습니까?');
+            if (!shouldUpgradeWithGit) {
+                return;
+            }
+        }
 
             const upgradeBtn = document.querySelector('button');
             upgradeBtn.disabled = true;
