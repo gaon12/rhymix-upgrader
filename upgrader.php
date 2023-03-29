@@ -77,9 +77,37 @@ function downloadFile($url, $path)
     file_put_contents($path, $content);
 }
 
+function checkDirectoryWritable($src)
+{
+    $dir = opendir($src);
+    while (false !== ($file = readdir($dir))) {
+        if (($file != '.') && ($file != '..')) {
+            $full = $src . '/' . $file;
+            if (is_dir($full)) {
+                if (!is_writable($full) || !checkDirectoryWritable($full)) {
+                    return false;
+                }
+            } else {
+                if (!is_writable($full)) {
+                    return false;
+                }
+            }
+        }
+    }
+    closedir($dir);
+    return true;
+}
+
 function upgradeVersion($latest_version)
 {
     $result = [];
+
+    // Check if directories are writable
+    if (!checkDirectoryWritable('.')) {
+        $result['status'] = 'error';
+        $result['message'] = '디렉터리에 쓰기 권한이 없습니다. 권한을 확인해주세요.';
+        return $result;
+    }
 
     // Download the latest version
     $download_url = "https://github.com/rhymix/rhymix/archive/refs/tags/{$latest_version}.zip";
@@ -115,7 +143,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         echo json_encode($result);
     } else {
         header('HTTP/1.1 403 Forbidden');
-        echo '관리자 권한이 필요합니다.';
+        // 에러 메시지를 삭제하고 빈 응답 본문을 반환합니다.
     }
     exit;
 }
