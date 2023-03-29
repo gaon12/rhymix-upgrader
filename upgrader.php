@@ -1,5 +1,17 @@
 <?php
 
+// Rhymix 로딩
+require_once './config/config.inc.php';
+$oContext = &Context::getInstance();
+$oContext->init();
+
+// 관리자 권한 확인
+$is_admin = false;
+$logged_info = Context::get('logged_info');
+if ($logged_info && $logged_info->is_admin == 'Y') {
+    $is_admin = true;
+}
+
 function rrmdir($src)
 {
     $dir = opendir($src);
@@ -95,10 +107,16 @@ function upgradeVersion($latest_version)
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $latest_version = getLatestVersion();
-    $result = upgradeVersion($latest_version);
-    header('Content-Type: application/json');
-    echo json_encode($result);
+    // 관리자 권한 확인 후 처리
+    if ($is_admin) {
+        $latest_version = getLatestVersion();
+        $result = upgradeVersion($latest_version);
+        header('Content-Type: application/json');
+        echo json_encode($result);
+    } else {
+        header('HTTP/1.1 403 Forbidden');
+        echo '관리자 권한이 필요합니다.';
+    }
     exit;
 }
 
@@ -185,36 +203,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </div>
     <script>
         function checkVersionsAndUpgrade() {
-        const currentVersion = '<?= getCurrentVersion(); ?>';
-        const latestVersion = '<?= getLatestVersion(); ?>';
+            const currentVersion = '<?= getCurrentVersion(); ?>';
+            const latestVersion = '<?= getLatestVersion(); ?>';
 
-        if (currentVersion === latestVersion) {
-            const shouldUpgrade = confirm('현재 최신버전을 사용중인 것 같습니다. 그래도 최신 버전으로 덮어씌우시겠습니까?');
-            if (!shouldUpgrade) {
-                return;
+            if (currentVersion === latestVersion) {
+                const shouldUpgrade = confirm('현재 최신버전을 사용중인 것 같습니다. 그래도 최신 버전으로 덮어씌우시겠습니까?');
+                if (!shouldUpgrade) {
+                    return;
+                }
             }
-        }
 
-        const upgradeBtn = document.querySelector('button');
-        upgradeBtn.disabled = true;
-        document.querySelector('.progress').style.display = 'block';
+            const upgradeBtn = document.querySelector('button');
+            upgradeBtn.disabled = true;
+            document.querySelector('.progress').style.display = 'block';
 
-        fetch('', { method: 'POST' })
-            .then(response => response.json())
-            .then(result => {
-                document.getElementById('upgradeStatus').innerText = result.message;
+            fetch('', { method: 'POST' })
+                .then(response => {
+                    if (response.status === 403) {
+                        throw new Error('에러: 관리자 권한이 필요합니다.');
+                    }
+                    return response.json();
+                })
+                .then(result => {
+                    document.getElementById('upgradeStatus').innerText = result.message;
 
-                if (result.status === 'success') {
-                    document.querySelector('.progress-bar').style.width = '100%';
-                    setTimeout(function () {
-                        location.reload();
-                    }, 1000);
-                } else {
+                    if (result.status === 'success') {
+                        document.querySelector('.progress-bar').style.width = '100%';
+                        setTimeout(function () {
+                            location.reload();
+                        }, 1000);
+                    } else {
+                        upgradeBtn.disabled = false;
+                        document.querySelector('.progress').style.display = 'none';
+                    }
+                })
+                .catch(error => {
+                    document.getElementById('upgradeStatus').innerText = error.message;
                     upgradeBtn.disabled = false;
                     document.querySelector('.progress').style.display = 'none';
-                }
-            });
-    }
+                });
+        }
     </script>
 </body>
 
