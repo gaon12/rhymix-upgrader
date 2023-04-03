@@ -1,11 +1,7 @@
 <?php
-
-// Rhymix 로딩
 require_once './config/config.inc.php';
 $oContext = &Context::getInstance();
 $oContext->init();
-
-// 관리자 권한 확인
 $is_admin = false;
 $logged_info = Context::get('logged_info');
 if ($logged_info && $logged_info->is_admin == 'Y') {
@@ -32,13 +28,16 @@ function rrmdir($src)
 function recurse_copy($src, $dst)
 {
     $dir = opendir($src);
-    @mkdir($dst);
+    @mkdir($dst, 0777, true);
     while (false !== ($file = readdir($dir))) {
         if (($file != '.') && ($file != '..')) {
             if (is_dir($src . '/' . $file)) {
                 recurse_copy($src . '/' . $file, $dst . '/' . $file);
             } else {
-                copy($src . '/' . $file, $dst . '/' . $file);
+                if (!@copy($src . '/' . $file, $dst . '/' . $file)) {
+                    $error = error_get_last();
+                    throw new Exception('복사 실패: ' . $error['message']);
+                }
             }
         }
     }
@@ -60,11 +59,13 @@ function getLatestVersion()
 {
     $latest_version = '';
     $api_url = 'https://api.github.com/repos/rhymix/rhymix/tags';
-    $options = ['http' => ['header' => ['User-Agent: PHP']]];
+    $options = ['http' => ['header' => ['User-Agent: PHP-test']]];
     $context = stream_context_create($options);
-    $response = file_get_contents($api_url, false, $context);
+    $response = @file_get_contents($api_url, false, $context);
+    if ($response === false) {
+        return "ERR: 500";
+    }
     $tags = json_decode($response);
-
     if (!empty($tags[0]->name)) {
         $latest_version = $tags[0]->name;
     }
@@ -78,8 +79,12 @@ function checkGitFolderExists()
 
 function downloadFile($url, $path)
 {
-    $content = file_get_contents($url);
+    $content = @file_get_contents($url);
+    if ($content === false) {
+        return "ERR: 300";
+    }
     file_put_contents($path, $content);
+    return true;
 }
 
 function checkDirectoryWritable($src)
@@ -105,187 +110,279 @@ function checkDirectoryWritable($src)
 
 function upgradeVersion($latest_version)
 {
-    set_time_limit(180); // 타임아웃 시간을 180초(3분)으로 설정
-
+    set_time_limit(180);
     $result = [];
 
-    // Check if directories are writable
     if (!checkDirectoryWritable('.')) {
         $result['status'] = 'error';
-        $result['message'] = '디렉터리에 쓰기 권한이 없습니다. 권한을 확인해주세요.';
+        $result['message'] = 'ERR: 200';
         return $result;
     }
 
-    // Download the latest version
-    $download_url = "https://github.com/rhymix/rhymix/archive/refs/tags/{$latest_version}.zip";
-    $zip_path = "{$latest_version}.zip";
-    downloadFile($download_url, $zip_path);
+    $zip_path = './rhymix-' . $latest_version . '.zip';
+    $download_link = 'https://github.com/rhymix/rhymix/archive/refs/tags/' . $latest_version . '.zip';
 
-    // Unzip the archive
+    if (checkGitFolderExists()) {
+        $download_link = 'https://github.com/rhymix/rhymix/archive/develop.zip';
+    }
+
+    $download_result = downloadFile($download_link, $zip_path);
+
+    if ($download_result !== true) {
+        $result['status'] = 'error';
+        $result['message'] = $download_result;
+        return $result;
+    }
+
+    $src = './rhymix-' . $latest_version;
+    $dest = '.';
     $zip = new ZipArchive;
-    $zip->open($zip_path);
-    $zip->extractTo('.');
+    $zip_status = $zip->open($zip_path);
+
+    if ($zip_status === TRUE) {
+        $zip->extractTo($src);
+        $zip->close();
+
+        try {
+            recurse_copy($src, $dest);
+        } catch (Exception $e) {
+            $result['status'] = 'error';
+            $result['message'] = $e->getMessage();
+            return $result;
+        }
+    } else {
+        $result['status'] = 'error';
+        $result['message'] = 'ERR: 400';
+        return $result;
+    }
+
+    $unzip_folder = './rhymix-' . $latest_version;
+    $zip->extractTo($unzip_folder);
     $zip->close();
 
-    // Copy files from the extracted folder
-    $src = "rhymix-{$latest_version}";
-    $dest = '.';
-    recurse_copy($src, $dest);
+    if (is_dir($unzip_folder)) {
+        recurse_copy($unzip_folder, '.');
+        rrmdir($unzip_folder);
+    } else {
+        $result['status'] = 'error';
+        $result['message'] = 'ERR: 410';
+        return $result;
+    }
 
-    // Remove the zip file and extracted folder
     unlink($zip_path);
-    rrmdir($src);
-
     $result['status'] = 'success';
-    $result['message'] = 'Upgrade Complete';
+    $result['message'] = 'Upgrade completed successfully!';
     return $result;
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // 관리자 권한 확인 후 처리
+    header('Content-Type: application/json');
     if ($is_admin) {
         $latest_version = getLatestVersion();
         $result = upgradeVersion($latest_version);
-        header('Content-Type: application/json');
         echo json_encode($result);
     } else {
         header('HTTP/1.1 403 Forbidden');
-        // 에러 메시지를 삭제하고 빈 응답 본문을 반환합니다.
+        echo json_encode(['status' => 'error', 'message' => 'ERR: 100']);
     }
     exit;
 }
-
 ?>
 
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Rhymix Upgrader</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/normalize/8.0.1/normalize.min.css"
-        integrity="sha512-NhSC1YmyruXifcj/KFRWoC561YpHpc5Jtzgvbuzx5VozKpWvQ+4nXhPdFgmx8xqexRcpAglTj9sIBWINXa8x5w=="
-        crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <meta content="width=device-width, initial-scale=1" name="viewport">
+    <title>Rhymix Updater</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11.1.4/dist/sweetalert2.all.min.js"></script>
     <style>
         body {
-            font-family: Arial, sans-serif;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            background-color: #f7f7f7;
+            background-color: #f8f9fa;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         }
 
-        .container {
-            padding: 2rem;
-            background-color: #fff;
+        .updater-container {
+            max-width: 500px;
+            margin: 100px auto;
+            background-color: #ffffff;
             border-radius: 5px;
-            box-shadow: 0 0 5px rgba(0, 0, 0, 0.1);
-            width: 500px;
-            height: 300px;
+            padding: 20px;
+            box-shadow: 0 1px 5px rgba(0, 0, 0, 0.1);
         }
 
-        .title {
-            text-align: center;
+        h1 {
+            font-size: 28px;
+            margin-bottom: 30px;
         }
 
-        li {
-            font-family: Arial, sans-serif;
-        }
-
-        button {
-            background-color: #007bff;
-            border: none;
-            color: #fff;
-            padding: 0.5rem 1rem;
-            font-size: 1rem;
-            border-radius: 5px;
-            cursor: pointer;
-            margin: auto;
-            display: block;
-        }
-
-        .progress {
-            display: none;
-            margin-top: 1rem;
-        }
-
-        .progress-bar {
-            background-color: #007bff;
-            height: 1rem;
-            width: 0;
-            border-radius: 5px;
+        #upgrade-btn {
+            width: 100%;
         }
     </style>
 </head>
-
 <body>
-    <div class="container">
-        <h1 class="title">Rhymix Upgrader</h1>
-        <ul>
-            <li>Current version: <?= getCurrentVersion(); ?></li>
-            <li>Latest version: <?= getLatestVersion(); ?></li>
-            <li>.git Found: <?= checkGitFolderExists() ? 'true' : 'false' ?></li>
-        </ul>
-        <br><br>
-        <button type="button" onclick="checkVersionsAndUpgrade()">Upgrade</button>
-        <div class="progress">
-            <div class="progress-bar"></div>
+    <div class="updater-container">
+        <h1 class="text-center">Rhymix Updater</h1>
+        <div class="mb-3">
+            <p>Current version: <span id="current-version"></span></p>
+            <p>Latest version: <span id="latest-version"></span></p>
         </div>
-        <p id="upgradeStatus"></p>
+        <button class="btn btn-primary mb-3" id="upgrade-btn">Upgrade to the latest version</button>
+        <div class="progress" id="progress-bar-container" style="display: none;">
+            <div class="progress-bar" id="progress-bar" role="progressbar" style="width: 0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+        </div>
     </div>
     <script>
-        function checkVersionsAndUpgrade() {
-        const currentVersion = '<?= getCurrentVersion(); ?>';
-        const latestVersion = '<?= getLatestVersion(); ?>';
-        const gitFolderExists = <?= checkGitFolderExists() ? 'true' : 'false' ?>;
+        $(document).ready(function () {
+    const is_admin = <?= json_encode($is_admin) ?>;
+    
+    $('#current-version').text(getCurrentVersion());
+    getLatestVersion().then(function (latest_version) {
+        $('#latest-version').text(latest_version);
+    });
 
-        if (currentVersion === latestVersion) {
-            const shouldUpgrade = confirm('현재 최신버전을 사용중인 것 같습니다. 그래도 최신 버전으로 덮어씌우시겠습니까?');
-            if (!shouldUpgrade) {
-                return;
-            }
+    $('#upgrade-btn').on('click', function () {
+        if (!is_admin) {
+            Swal.fire({
+                title: 'Error!',
+                text: 'ERR: 100',
+                icon: 'error',
+                confirmButtonText: 'OK'
+            });
+            return;
         }
-
-        if (gitFolderExists) {
-            const shouldUpgradeWithGit = confirm('.git 폴더를 발견했습니다. git 명령어로 업데이트 하는 것을 권장합니다. 그래도 업데이트 하시겠습니까?');
-            if (!shouldUpgradeWithGit) {
-                return;
-            }
-        }
-
-            const upgradeBtn = document.querySelector('button');
-            upgradeBtn.disabled = true;
-            document.querySelector('.progress').style.display = 'block';
-
-            fetch('', { method: 'POST' })
-                .then(response => {
-                    if (response.status === 403) {
-                        throw new Error('에러: 관리자 권한이 필요합니다.');
-                    }
-                    return response.json();
-                })
-                .then(result => {
-                    document.getElementById('upgradeStatus').innerText = result.message;
-
-                    if (result.status === 'success') {
-                        document.querySelector('.progress-bar').style.width = '100%';
-                        setTimeout(function () {
+    
+        Swal.fire({
+            title: 'Are you sure?',
+            text: "This will upgrade Rhymix to the latest version. Make sure you have a backup of your files and database.",
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonColor: '#3085d6',
+            cancelButtonColor: '#d33',
+            confirmButtonText: 'Yes, upgrade!'
+        }).then((result) => {
+            if (result.isConfirmed) {
+                $('#progress-bar-container').show(); // Progress bar를 보이게 합니다.
+                upgradeVersion().then(function (response) {
+                    if (response.status === 'success') {
+                        updateProgressBar(100);
+                        Swal.fire({
+                            title: 'Success!',
+                            text: response.message,
+                            icon: 'success',
+                            confirmButtonText: 'OK'
+                        }).then(() => {
                             location.reload();
-                        }, 1000);
+                        });
                     } else {
-                        upgradeBtn.disabled = false;
-                        document.querySelector('.progress').style.display = 'none';
+                        Swal.fire({
+                            title: 'Error!',
+                            text: response.message,
+                            icon: 'error',
+                            confirmButtonText: 'OK'
+                        });
                     }
-                })
-                .catch(error => {
-                    document.getElementById('upgradeStatus').innerText = error.message;
-                    upgradeBtn.disabled = false;
-                    document.querySelector('.progress').style.display = 'none';
                 });
+            }
+        });
+    });
+});
+
+function getCurrentVersion() {
+    return '<?=getCurrentVersion()?>';
+}
+
+async function getLatestVersion() {
+    const response = await fetch('https://api.github.com/repos/rhymix/rhymix/tags', {
+        headers: { 'User-Agent': 'PHP-test' }
+    });
+    const tags = await response.json();
+    return tags[0].name;
+}
+
+function updateProgressBar(percentage) {
+    $('#progress-bar').css('width', percentage + '%').attr('aria-valuenow', percentage).text(percentage + '%');
+}
+
+async function upgradeVersion() {
+    updateProgressBar(25); // 파일 다운로드 시작
+
+    const response = await fetch(window.location.href, {
+        method: 'POST',
+        headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ action: 'upgrade' })
+    });
+
+    updateProgressBar(50); // 파일 다운로드 완료
+
+    if (response.ok) {
+        const result = await response.json();
+        if (result.status === 'success') {
+            updateProgressBar(75); // 압축 해제 완료
+
+            // 덮어쓰기를 위한 코드 위치
+            const copyResult = await fetch(window.location.href, {
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ action: 'copy' })
+            });
+
+            if (copyResult.ok) {
+                updateProgressBar(85); // 덮어쓰기 완료
+            } else {
+                const error = await copyResult.json();
+                return {
+                    status: 'error',
+                    message: error.message
+                };
+            }
+
+            // zip 파일 및 압축 해제한 폴더 및 파일 삭제 코드 위치
+            //...
+            const cleanupResult = await fetch(window.location.href, {
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ action: 'cleanup' })
+            });
+
+            if (cleanupResult.ok) {
+                updateProgressBar(95); // zip 파일 및 압축 해제한 폴더 및 파일 삭제 완료
+            } else {
+                const error = await cleanupResult.json();
+                return {
+                    status: 'error',
+                    message: error.message
+                };
+            }
+
+            return result;
+        } else {
+            return {
+                status: 'error',
+                message: result.message
+            };
         }
+    } else {
+        const error = await response.json(); // 에러 메시지를 받아옴
+        return {
+            status: 'error',
+            message: error.message // 받아온 에러 메시지를 반환하도록 수정
+        };
+    }
+}
+
     </script>
 </body>
-
 </html>
